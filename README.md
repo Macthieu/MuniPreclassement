@@ -1,21 +1,43 @@
 # MuniPreclassement
 
-MuniPreclassement est l'outil spécialisé de pré-classement documentaire de la suite municipale.
+MuniPreclassement est l'outil specialise correspondant dans la suite documentaire municipale Orchiviste/Muni.
 
 ## Mission
 
-Proposer un pré-classement cohérent et explicable pour accélérer le tri et la validation archivistique.
+Ce depot fournit le socle executable minimal (Core + CLI) pour l'integration V1 via CLI JSON local.
 
 ## Positionnement
 
-- Rôle: outil spécialisé de pré-classement.
-- Orchiviste reste le cockpit/hub; MuniPreclassement reste un outil autonome dédié.
+- Outil autonome executables seul.
+- Integrable dans Orchiviste (cockpit/hub) via contrat commun CLI JSON.
 
-## Versionnage
+## Contrat CLI JSON V1
 
-- Version initiale de normalisation: `0.1.0`.
-- Le projet suit [Semantic Versioning](https://semver.org/lang/fr/).
+Commande:
+
+```bash
+muni-preclassement-cli run --request /path/request.json --result /path/result.json
+```
+
+Valeurs autorisees de `status`:
+
+- `queued`
+- `running`
+- `succeeded`
+- `failed`
+- `needs_review`
+- `cancelled`
+- `not_implemented`
+
+Le squelette actuel retourne `not_implemented` tant que la logique metier n'est pas implementee.
+
+## Build et tests
+
+```bash
+swift build
+swift test
+```
 
 ## Licence
 
-Ce dépôt est publié sous licence **GNU GPL v3.0**. Voir [LICENSE](LICENSE).
+GNU GPL v3.0, voir [LICENSE](LICENSE).
