@@ -1,39 +1,47 @@
 # MuniPreclassement
 
-MuniPreclassement est l'outil specialise correspondant dans la suite documentaire municipale Orchiviste/Muni.
+MuniPreclassement est l'outil specialise de preclassement documentaire de la suite Orchiviste/Muni.
 
 ## Mission
 
-Ce depot fournit le socle executable minimal (Core + CLI) pour l'integration V1 via CLI JSON local.
+Produire des suggestions de classement deterministes et exploitables via contrat CLI JSON V1, sans logique IA non deterministe dans cette phase.
 
 ## Positionnement
 
-- Outil autonome executables seul.
-- Integrable dans Orchiviste (cockpit/hub) via contrat commun CLI JSON.
+- Outil autonome executable localement.
+- Integrable dans Orchiviste (cockpit/hub) via contrat commun OrchivisteKit.
+- Peut reutiliser la sortie JSON de MuniMetadonnees comme seed de preclassement.
 
 ## Contrat CLI JSON V1
 
-Commande:
+Commande canonique:
 
 ```bash
 muni-preclassement-cli run --request /path/request.json --result /path/result.json
 ```
 
-Valeurs autorisees de `status`:
+Entrees V1 supportees:
 
-- `queued`
-- `running`
-- `succeeded`
-- `failed`
-- `needs_review`
-- `cancelled`
-- `not_implemented`
+- `parameters.text` (texte inline)
+- `parameters.source_path` (chemin ou `file://` vers un fichier texte)
+- `parameters.metadata_report_path` (rapport JSON MuniMetadonnees)
+- `input_artifacts[]` (`kind=input` pour texte, `kind=report` pour metadata)
+- `parameters.output_report_path` (optionnel) pour exporter un rapport JSON de preclassement
 
-Le squelette actuel retourne `not_implemented` tant que la logique metier n'est pas implementee.
+Parametres optionnels:
+
+- `max_suggestions` (1...5, defaut 3)
+
+Sorties:
+
+- `ToolResult` canonique dans `--result`
+- statut nominal: `succeeded` ou `needs_review`
+- statut d'erreur: `failed`
 
 ## Build et tests
 
 ```bash
+swift package resolve
 swift build
 swift test
 ```
