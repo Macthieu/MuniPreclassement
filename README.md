@@ -12,6 +12,11 @@ Produire des suggestions de classement deterministes et exploitables via contrat
 - Integrable dans Orchiviste (cockpit/hub) via contrat commun OrchivisteKit.
 - Peut reutiliser la sortie JSON de MuniMetadonnees comme seed de preclassement.
 
+## Version
+
+- Version de release: `0.2.0`
+- Tag Git: `v0.2.0`
+
 ## Contrat CLI JSON V1
 
 Commande canonique:
