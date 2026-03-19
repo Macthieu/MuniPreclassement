@@ -19,6 +19,36 @@ private struct MetadataReportPayload: Codable {
     }
 }
 
+private struct MuniReglesBundleManifestPayload: Codable {
+    let bundleVersion: String
+    let moduleVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case bundleVersion = "bundle_version"
+        case moduleVersion = "module_version"
+    }
+}
+
+private struct MuniReglesClassificationEntryPayload: Codable {
+    let code: String
+    let label: String
+    let path: String
+}
+
+private struct MuniReglesClassificationPlanPayload: Codable {
+    let entries: [MuniReglesClassificationEntryPayload]
+}
+
+private struct MuniReglesBundlePayload: Codable {
+    let manifest: MuniReglesBundleManifestPayload
+    let classificationPlan: MuniReglesClassificationPlanPayload
+
+    enum CodingKeys: String, CodingKey {
+        case manifest
+        case classificationPlan = "classification_plan"
+    }
+}
+
 public enum CanonicalRunAdapterError: Error, Sendable {
     case unsupportedAction(String)
     case missingInput
@@ -60,6 +90,12 @@ private struct ParsedMetadataSeed: Sendable {
 
 private struct CanonicalExecutionContext: Sendable {
     let input: PreclassificationInput
+    let rules: [ClassificationRule]
+    let rulesSource: String
+    let rulesBundleVersion: String?
+    let rulesModuleVersion: String?
+    let rulesBundlePath: String?
+    let rulesFallbackReason: String?
     let outputPath: String?
 }
 
@@ -69,7 +105,11 @@ public enum CanonicalRunAdapter {
 
         do {
             let context = try parseContext(from: request)
-            let report = MuniPreclassementRunner.preclassify(input: context.input, generatedAt: isoTimestamp())
+            let report = MuniPreclassementRunner.preclassify(
+                input: context.input,
+                rules: context.rules,
+                generatedAt: isoTimestamp()
+            )
             let finishedAt = isoTimestamp()
 
             let status: ToolStatus = report.confidenceLevel == .low ? .needsReview : .succeeded
@@ -101,7 +141,7 @@ public enum CanonicalRunAdapter {
                 summary: summary,
                 outputArtifacts: outputArtifacts,
                 errors: [],
-                metadata: resultMetadata(from: report)
+                metadata: resultMetadata(from: report, context: context)
             )
         } catch let adapterError as CanonicalRunAdapterError {
             let finishedAt = isoTimestamp()
@@ -136,6 +176,7 @@ public enum CanonicalRunAdapter {
             throw CanonicalRunAdapterError.invalidParameter("max_suggestions", "expected integer in range 1...5")
         }
 
+        let rulesContext = try resolveRulesContext(from: request)
         let metadataSeed = try resolveMetadataSeed(from: request)
 
         let resolvedText: String
@@ -169,7 +210,16 @@ public enum CanonicalRunAdapter {
             maxSuggestions: maxSuggestions
         )
 
-        return CanonicalExecutionContext(input: input, outputPath: outputPath)
+        return CanonicalExecutionContext(
+            input: input,
+            rules: rulesContext.rules,
+            rulesSource: rulesContext.source,
+            rulesBundleVersion: rulesContext.bundleVersion,
+            rulesModuleVersion: rulesContext.moduleVersion,
+            rulesBundlePath: rulesContext.bundlePath,
+            rulesFallbackReason: rulesContext.fallbackReason,
+            outputPath: outputPath
+        )
     }
 
     private static func validateAction(_ rawAction: String) throws {
@@ -194,7 +244,7 @@ public enum CanonicalRunAdapter {
                 return ""
             }
             switch key {
-            case "source_path", "metadata_report_path", "output_report_path":
+            case "source_path", "metadata_report_path", "output_report_path", "regles_bundle_path", "bundle_path":
                 return resolvePathFromURIOrPath(trimmed)
             default:
                 return trimmed
@@ -230,6 +280,128 @@ public enum CanonicalRunAdapter {
         }
 
         return ParsedMetadataSeed(summary: nil, suggestedTitle: nil, keywords: [])
+    }
+
+    private static func resolveRulesContext(from request: ToolRequest) throws -> (
+        rules: [ClassificationRule],
+        source: String,
+        bundleVersion: String?,
+        moduleVersion: String?,
+        bundlePath: String?,
+        fallbackReason: String?
+    ) {
+        let bundlePath = try resolveMuniReglesBundlePath(from: request)
+        guard let bundlePath, !bundlePath.isEmpty else {
+            return (
+                rules: DefaultClassificationProfile.rules,
+                source: "fallback_local",
+                bundleVersion: nil,
+                moduleVersion: nil,
+                bundlePath: nil,
+                fallbackReason: nil
+            )
+        }
+
+        guard let bundle = try? parseMuniReglesBundle(fromPath: bundlePath) else {
+            return (
+                rules: DefaultClassificationProfile.rules,
+                source: "fallback_local",
+                bundleVersion: nil,
+                moduleVersion: nil,
+                bundlePath: bundlePath,
+                fallbackReason: "bundle_unreadable_or_invalid"
+            )
+        }
+
+        let mappedRules = mapRules(from: bundle)
+        guard !mappedRules.isEmpty else {
+            return (
+                rules: DefaultClassificationProfile.rules,
+                source: "fallback_local",
+                bundleVersion: normalizedNonEmpty(bundle.manifest.bundleVersion),
+                moduleVersion: normalizedNonEmpty(bundle.manifest.moduleVersion),
+                bundlePath: bundlePath,
+                fallbackReason: "bundle_contains_no_usable_rules"
+            )
+        }
+
+        return (
+            rules: mappedRules,
+            source: "muniregles_bundle",
+            bundleVersion: normalizedNonEmpty(bundle.manifest.bundleVersion),
+            moduleVersion: normalizedNonEmpty(bundle.manifest.moduleVersion),
+            bundlePath: bundlePath,
+            fallbackReason: nil
+        )
+    }
+
+    private static func resolveMuniReglesBundlePath(from request: ToolRequest) throws -> String? {
+        if let explicitPath = try optionalStringParameter("regles_bundle_path", in: request), !explicitPath.isEmpty {
+            return explicitPath
+        }
+
+        if let legacyPath = try optionalStringParameter("bundle_path", in: request), !legacyPath.isEmpty {
+            return legacyPath
+        }
+
+        let supportedIDs: Set<String> = ["regles_bundle", "bundle"]
+        guard let artifact = request.inputArtifacts.first(where: { supportedIDs.contains($0.id.lowercased()) }) else {
+            return nil
+        }
+
+        let resolved = resolvePathFromURIOrPath(artifact.uri).trimmingCharacters(in: .whitespacesAndNewlines)
+        return resolved.isEmpty ? nil : resolved
+    }
+
+    private static func parseMuniReglesBundle(fromPath path: String) throws -> MuniReglesBundlePayload {
+        let fileURL = URL(fileURLWithPath: path)
+        let data = try Data(contentsOf: fileURL)
+        return try JSONDecoder().decode(MuniReglesBundlePayload.self, from: data)
+    }
+
+    private static func mapRules(from bundle: MuniReglesBundlePayload) -> [ClassificationRule] {
+        var seenCodes: Set<String> = []
+
+        return bundle.classificationPlan.entries.compactMap { entry in
+            let code = entry.code.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = entry.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !code.isEmpty, !label.isEmpty else {
+                return nil
+            }
+            guard seenCodes.insert(code).inserted else {
+                return nil
+            }
+
+            let keywords = normalizedTokens(from: "\(label) \(entry.path)")
+            guard !keywords.isEmpty else {
+                return nil
+            }
+
+            return ClassificationRule(code: code, label: label, keywords: keywords)
+        }
+    }
+
+    private static func normalizedTokens(from value: String) -> [String] {
+        let normalized = value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 3 }
+
+        var deduped: [String] = []
+        var seen: Set<String> = []
+        for token in normalized where seen.insert(token).inserted {
+            deduped.append(token)
+        }
+        return Array(deduped.prefix(24))
+    }
+
+    private static func normalizedNonEmpty(_ value: String?) -> String? {
+        guard let value else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func parseMetadataSeed(fromPath path: String) throws -> ParsedMetadataSeed {
@@ -337,11 +509,16 @@ public enum CanonicalRunAdapter {
         }
     }
 
-    private static func resultMetadata(from report: PreclassificationReport) -> [String: JSONValue] {
+    private static func resultMetadata(
+        from report: PreclassificationReport,
+        context: CanonicalExecutionContext
+    ) -> [String: JSONValue] {
         var metadata: [String: JSONValue] = [
             "source_kind": .string(report.sourceKind),
             "top_score": .number(Double(report.topScore)),
             "confidence_level": .string(report.confidenceLevel.rawValue),
+            "rules_source": .string(context.rulesSource),
+            "rules_count": .number(Double(context.rules.count)),
             "suggestions": .array(
                 report.suggestions.map { suggestion in
                     .object([
@@ -360,6 +537,18 @@ public enum CanonicalRunAdapter {
         }
         if let topLabel = report.topClassLabel {
             metadata["top_class_label"] = .string(topLabel)
+        }
+        if let bundleVersion = context.rulesBundleVersion {
+            metadata["rules_bundle_version"] = .string(bundleVersion)
+        }
+        if let moduleVersion = context.rulesModuleVersion {
+            metadata["rules_module_version"] = .string(moduleVersion)
+        }
+        if let bundlePath = context.rulesBundlePath {
+            metadata["rules_bundle_path"] = .string(bundlePath)
+        }
+        if let fallbackReason = context.rulesFallbackReason {
+            metadata["rules_fallback_reason"] = .string(fallbackReason)
         }
         if !report.warnings.isEmpty {
             metadata["warnings"] = .array(report.warnings.map { .string($0) })
